@@ -49,6 +49,19 @@ current dimension, even when another dimension is ticking. On a client they
 identify the local player's level. Unknown, disconnected, replaced or stale handles
 return `None`.
 
+## A player's profile at login
+
+`player_login_profile` runs once for each accepted login, after the name,
+whitelist, ban and server-full checks and before the login success is sent, with
+the UUID and name the login authenticated and the profile's `properties`. A skin
+or identity mod replaces the `textures` property there; the login success and the
+player list then carry the changed profile. It has no `Host` (it runs on the
+connection thread), so answer from the arguments and your mod's own state alone,
+and keep the list inside the profile's limits: at most 16 properties, names of 64
+UTF-16 units, values of 32767 and signatures of 1024. A list past a limit is
+refused and the login's own properties are sent. `player_login` follows later and
+can still refuse the player.
+
 ## Messages and visibility
 
 Send a message with `player.tell(host, text)`, `player.action_bar(host, text)` or
