@@ -236,6 +236,14 @@ pub(super) struct GuestSwap {
 }
 
 impl GuestPlay {
+    /// A fresh state whose attack ticker is full, as the local player's starts
+    /// (`Game::attack_ticks`): an actor that acts once hits as one that waited.
+    pub(in crate::game) fn charged() -> Self {
+        Self {
+            attack_ticks: 100,
+            ..Self::default()
+        }
+    }
     /// The guest's `Player.attackStrengthTicker` outside its turn.
     pub(in crate::game) fn attack_ticks(&self) -> u32 {
         self.attack_ticks
