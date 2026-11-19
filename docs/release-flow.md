@@ -283,23 +283,36 @@ and `pack` on their real hosts. A local source check does not substitute for the
 
 There is no daily run: `daily.yml` and the workflows it called (`ignored-tests.yml`, `wasm-mods.yml`,
 `fn-replace-check.yml`, `native-dylib-probe.yml`, `launcher-windows-check.yml`), and `hot-paths.yml`,
-`paper-parity.yml` and `wasm-coverage.yml`, are gone from main. What runs Rust tests now:
+`paper-parity.yml` and `wasm-coverage.yml`, are gone from main. The workflows that run Rust tests now:
 
-- `ci.yml`, on Linux, for a pull request or merge-queue entry that changes Rust (`tools/ci/rust_changes.py`; a push
-  to main of a commit the queue already tested only builds): the workspace's unit, binary and integration tests,
-  its doc tests, the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no
-  GitHub runner holds), the mod points' wire loopback test, and the launcher's library and binary tests
-  (`verify (launcher)`).
-- `launcher.yml`'s build, only when it builds a launcher release: the launcher's tests on Linux, macOS and Windows
-  (x86-64 and ARM64).
-- `ci.yml`'s Windows ARM64 job, only when a maintainer dispatches it: the launcher's library tests and one
-  `#[ignore]`d toolchain test.
+| Workflow (job) | When | What it tests |
+|---|---|---|
+| `ci.yml` (`verify (Rust tests)`) | Pull requests that change Rust (`tools/ci/rust_changes.py`), merge-queue entries, manual dispatch, pushes to main (only a build when the queue already tested the commit) | On Linux: the workspace's unit, binary, integration and doc tests, and the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no GitHub runner holds) |
+| `ci.yml` (`verify (launcher)`) | Pull requests, queue entries and pushes that change the launcher or a crate it builds; every manual dispatch | On Linux: the launcher's library and binary tests |
+| `ci.yml` (`verify (mod points)`) | Pull requests that change the mod points (`tools/ci/rust_changes.py`), merge-queue entries, pushes to main, manual dispatch | On Linux: `horizon-mod-points`' wire loopback test |
+| `ci.yml` (`Windows ARM64 game and launcher`) | Manual dispatch only | The launcher's library tests and the `#[ignore]`d `rust_toolchain::tests::managed_arm64_toolchain_builds_the_game` |
+| `launcher.yml` (`build`) | A launcher release; a dry run (manual dispatch, the default); a push to `launcher` or `launcher-*` (builds without publishing) | The launcher's tests on Linux, macOS (two builds, one for x86-64) and Windows (x64, ARM64) |
+| `game-build.yml`, from `nightly-build.yml` | Each Nightly build | On Windows x64: `horizon-client-render`'s `particles::polytone::tests::` |
+| `perf-wasm.yml` | Pull requests and pushes to main that change `horizon-perf`, `horizon-perf-format`, `horizon-bench`, `xtask` or the root manifests; manual dispatch | On Linux: `horizon-perf`'s `wasm` test |
+| `mod-registry.yml` | Pull requests and pushes to main that change `horizon-mod-package` or `horizon-mod-registry` | On Linux: `horizon-mod-registry`'s tests |
+| `telemetry-server.yml` | Pull requests and pushes to main that change `horizon-telemetry` or `horizon-telemetry-server` | On Linux: `horizon-telemetry-server`'s tests |
 
-So every other `#[ignore]`d test, the launcher's tests on Windows between launcher releases, and
-`horizon-mod-package`'s tests on Windows run in no workflow. Run them by hand when a change reaches them:
-`cargo test -p <crate> -- --ignored` for a crate's ignored tests, `cargo test` in `launcher/` on Windows, and
-`cargo test -p horizon-mod-package --features runtime-process` on Windows. The function-replacement check above is
-run by hand too.
+An `#[ignore]`d test also runs when an ordinary test starts it as a child process, as
+`processes_sharing_the_secrets_file_lose_nothing` starts `secrets_file_writer` (`launcher/src/account/tests.rs`).
+
+Run by no workflow: the other `#[ignore]`d tests (many are marked `daily`), the launcher's tests on Windows between
+the runs above, and `horizon-mod-package`'s tests on Windows with its `runtime-process` feature. Run them by hand when
+a change reaches them:
+
+- A crate's ignored tests: `cargo test -p <crate> -- --ignored`, naming the test to run one. In `launcher/`, a
+  separate workspace, `cargo test -- --ignored`.
+- The launcher on Windows: `cargo test` in `launcher/`.
+- `horizon-mod-package` on Windows: `cargo test -p horizon-mod-package --features runtime-process`, and its ignored
+  tests with `-- --ignored` added.
+- Tests that read the vanilla data need resources prepared with `horizon-prepare`; without them they prove nothing.
+
+The function-replacement check above is run by hand too. It compares hashes with `sha256sum`
+(`tools/ci/fn_replace_check.sh`), so on macOS put a `sha256sum` on `PATH` first (GNU coreutils has one).
 
 ### When it releases
 
