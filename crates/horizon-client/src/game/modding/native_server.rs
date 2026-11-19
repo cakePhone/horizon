@@ -597,8 +597,10 @@ impl Game<'_> {
             Err(panic) => std::panic::resume_unwind(panic),
         };
         // `state` holds the scoped actor again. The action ran in the level in place, at the
-        // scoped place, so a stack the API can't express is dropped there. No guest turn is
-        // needed for it, so nothing can refuse the drop and leave the stack unplaced.
+        // scoped place, so a stack the API can't express is dropped there as an ordinary item
+        // entity, outside any guest turn. It is subject to what any drop is: a mod's
+        // `entity_join_level` veto discards it, it is saved only as its chunk is, and a spawn
+        // hook that panics ends the loop before the stacks after it.
         let at = state.position;
         let mut kept = Vec::new();
         let held = api_stack_or_keep(held, &mut kept);
