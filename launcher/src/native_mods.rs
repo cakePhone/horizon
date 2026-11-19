@@ -336,6 +336,17 @@ pub fn clear_log() -> Result<(), String> {
     fs::write(log_path(), "").map_err(|e| format!("{}: {e}", log_path().display()))
 }
 
+/// Starts a build attempt's log from the window: [`clear_log`] under the build lease, so a
+/// build or cleanup already holding it keeps its log, result included (#18469). `Ok(false)`
+/// when one does: the attempt will be refused as busy and leaves the log alone.
+pub fn begin_log() -> Result<bool, String> {
+    match crate::native_cache::Cache::acquire(&backend::build_dir()) {
+        Err(crate::native_cache::Error::Busy) => Ok(false),
+        // Any other failure is the build's to report; the log is still this attempt's.
+        _lease => clear_log().map(|()| true),
+    }
+}
+
 /// Appends `message` (with a newline) to the build log, so a failure that happens before any
 /// command runs is still recorded.
 pub fn append_log(message: &str) -> Result<(), String> {
@@ -4162,6 +4173,24 @@ mod tests {
         assert_result_then_cleanup(&log, "Build completed.");
         assert!(!log.contains("error[E0425]"), "{log}");
         assert!(!log.contains("The build failed:"), "{log}");
+    }
+
+    /// #18469: a build attempt from the window while another build or its cleanup holds the
+    /// lease leaves that build's log, result included, as it is.
+    #[test]
+    fn a_busy_attempt_leaves_the_running_builds_log_alone() {
+        let _guard = scratch_state();
+        clear_log().unwrap();
+        append_log("Build completed.").unwrap();
+        let lease = crate::native_cache::Cache::acquire(&backend::build_dir()).unwrap();
+        assert_eq!(begin_log(), Ok(false));
+        assert_eq!(
+            fs::read_to_string(log_path()).unwrap(),
+            "Build completed.\n"
+        );
+        drop(lease);
+        assert_eq!(begin_log(), Ok(true));
+        assert_eq!(fs::read(log_path()).unwrap(), b"");
     }
 
     /// The build's result is written before the cache cleanup (#18469), so it is the build's
