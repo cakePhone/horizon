@@ -559,12 +559,13 @@ impl Game<'_> {
         let mut state = ScopedPlayerState::new(self.motion, self.items(), setup)?;
         let host = self.lan.as_mut().expect("validated fake's host");
         host.hub.guests.update(gi, |guest| state.swap(guest));
-        // A player who waited: the attack ticker starts full, as the local player's does.
-        let play = host
-            .play
-            .insert(conn, super::lan_actions::GuestPlay::charged());
+        let play = host.play.insert(conn, Default::default());
         let menus = host.menus.insert(conn, Default::default());
-        let outcome = self.perform_fake_action(gi, conn, action);
+        // A hook that panics during the action must not leave the fake on the scoped body: its
+        // own body, inventory, menus and play state are put back before the panic goes on.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.perform_fake_action(gi, conn, action)
+        }));
         let host = self.lan.as_mut().expect("guest turns retain the host");
         let (held, other) = host.hub.guests.update(gi, |guest| {
             let held = guest
@@ -591,8 +592,13 @@ impl Game<'_> {
         if let Some(play) = play {
             host.play.insert(conn, play);
         }
-        // `state` holds the action's own actor again: where it stood is where a stack the API
-        // can't express goes, so it is kept in the world rather than lost.
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
+        // `state` holds the scoped actor again. The action ran in the level in place, at the
+        // scoped place, so a stack the API can't express is dropped there. No guest turn is
+        // needed for it, so nothing can refuse the drop and leave the stack unplaced.
         let at = state.position;
         let mut kept = Vec::new();
         let held = api_stack_or_keep(held, &mut kept);
@@ -600,16 +606,8 @@ impl Game<'_> {
             .into_iter()
             .filter_map(|stack| api_stack_or_keep(Some(stack), &mut kept))
             .collect();
-        if !kept.is_empty() {
-            let count = kept.len();
-            let dropped = self.as_guest_at(gi, conn, |game| {
-                for stack in kept {
-                    game.spawn_item_own(stack, at, 10);
-                }
-            });
-            if dropped.is_err() {
-                log::warn!("a scoped player action could not drop {count} stack(s) at its actor");
-            }
+        for stack in kept {
+            self.spawn_item_own(stack, at, 10);
         }
         outcome.map(|outcome| ScopedActionResult::new(outcome, held, other))
     }
@@ -2407,14 +2405,31 @@ mod tests {
     use super::*;
     use horizon_client::items::ItemStack;
 
-    /// A stack the API can't express is kept for the world instead of ending the action.
+    /// A stack the API can't express is kept for the world instead of ending the action:
+    /// an item it has no key for, or components it has no value for; the rest converts.
     #[test]
     fn a_stack_the_api_cant_express_is_kept() {
+        crate::game::api_values::prepare_stack_boundary_tests();
         let mut kept = Vec::new();
-        let odd = ItemStack::new("test:not_an_item", 3);
-        assert_eq!(api_stack_or_keep(Some(odd.clone()), &mut kept), None);
+        let unknown = ItemStack::new("test:not_an_item", 3);
+        let mut odd_components = ItemStack::new("minecraft:stick", 2);
+        // A removal entry must be the empty compound; this one isn't.
+        odd_components
+            .data_mut()
+            .set_other("!minecraft:damage", Some(horizon_core::nbt::Tag::Int(1)));
+        assert!(matches!(
+            odd_components.try_into_api(),
+            Err(horizon_gameplay::api_values::StackReadError::InvalidComponents(_))
+        ));
+        let plain = ItemStack::new("minecraft:stick", 5);
+        assert_eq!(api_stack_or_keep(Some(unknown.clone()), &mut kept), None);
+        assert_eq!(api_stack_or_keep(Some(odd_components.clone()), &mut kept), None);
         assert_eq!(api_stack_or_keep(None, &mut kept), None);
-        assert_eq!(kept, vec![odd]);
+        assert_eq!(
+            api_stack_or_keep(Some(plain.clone()), &mut kept),
+            Some(plain.try_into_api().unwrap())
+        );
+        assert_eq!(kept, vec![unknown, odd_components]);
     }
 
     /// Box bounds come from mod code: one that is not finite reads no orb and never
@@ -5044,6 +5059,49 @@ pub(super) mod fake_action_tests {
         });
     }
 
+    /// A hook that panics inside a scoped action leaves the fake on its own body: its
+    /// inventory, menus and play state are back once the panic has passed.
+    #[test]
+    #[ignore = "daily"]
+    fn a_panic_inside_a_scoped_action_puts_the_fake_back() {
+        use mod_api::{Flow, Hooks, HostSide, PlayerActionSetup, RightClickBlockEvent};
+        #[derive(Default)]
+        struct Boom;
+        #[mod_api::horizon_mod]
+        impl Hooks for Boom {
+            fn right_click_block(&self, _: HostSide, _: &mut RightClickBlockEvent) -> Flow {
+                panic!("a mod's hook fails mid-action");
+            }
+        }
+        mod_platform::testing::with_mods(
+            vec![mod_api::ModEntry::new("boom", Box::new(Boom))].into(),
+            || {
+                super::super::native_entity_refs::tests::with_game(|game| {
+                    let (player, conn, _) = fake(game, Some("minecraft:diamond"), 0);
+                    let setup = PlayerActionSetup::new(
+                        Some(crate::game::api_values::test_snapshot(&ItemStack::new(
+                            "minecraft:oak_log",
+                            1,
+                        ))),
+                        [0.5, 64.0 + f64::from(1.62_f32), 0.5],
+                        0.0,
+                        0.0,
+                        false,
+                    );
+                    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        game.player_perform_action_scoped(player, on_top([1, 63, 0]), setup)
+                    }));
+                    assert!(panicked.is_err(), "the hook's panic goes on");
+                    assert_eq!(held(game, 2), Some(ItemStack::new("minecraft:diamond", 1)));
+                    let guest = game.lan.as_ref().unwrap().hub.guest(conn).unwrap();
+                    assert_eq!(guest.position, [0.5, 64.0, 0.5]);
+                    assert!(game.lan.as_ref().unwrap().play.contains_key(&conn));
+                    assert!(!game.fake_action.acting());
+                });
+            },
+        );
+    }
+
     #[test]
     #[ignore = "daily"]
     fn scoped_fake_use_hooks_see_the_setup_and_fail_is_not_consumed() {
@@ -5428,43 +5486,6 @@ pub(super) mod fake_action_tests {
                     Some(0.1),
                     "the swing reset the ticker to 0 after the blow: (0 + 0.5) / 5"
                 );
-            });
-        });
-    }
-
-    /// A scoped attack's actor has waited, as a player who just picked the weapon up and
-    /// waited would: the blow is fully charged.
-    #[test]
-    #[ignore = "daily"]
-    fn a_scoped_attack_is_fully_charged() {
-        use super::super::native_entity_refs::tests::with_game;
-        use std::sync::{Arc, Mutex};
-
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
-            "charge-watcher",
-            Box::new(ChargeWatcher(seen.clone())),
-        )]
-        .into();
-        mod_platform::testing::with_mods(mods, || {
-            with_game(|game| {
-                let (player, ..) = fake(game, None, 0);
-                let near = zombie(game, 5000, [2.0, 64.0, 0.5]);
-                let setup = mod_api::PlayerActionSetup::new(
-                    Some(crate::game::api_values::test_snapshot(&ItemStack::new(
-                        "minecraft:iron_sword",
-                        1,
-                    ))),
-                    [0.5, 64.0 + f64::from(1.62_f32), 0.5],
-                    -90.0,
-                    0.0,
-                    false,
-                );
-                let result = player
-                    .perform_action_scoped(game, PlayerAction::Attack { target: near }, setup)
-                    .unwrap();
-                assert_eq!(result.outcome, ActionOutcome::Consumed);
-                assert_eq!(*seen.lock().unwrap(), vec![Some(1.0)]);
             });
         });
     }
