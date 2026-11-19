@@ -2345,6 +2345,8 @@ fn isolated(
                 }
                 last = error;
             }
+            // Nothing was left out yet: there is no earlier diagnostic to repeat.
+            Err(Failed::Nothing) if skip.is_empty() => return Err(Failed::Nothing),
             Err(Failed::Nothing) => return Err(said(&skip, last)),
             Err(Failed::NoConsent) => return Err(Failed::NoConsent),
             Err(Failed::Worlds(stake)) => return Err(Failed::Worlds(stake)),
@@ -2846,6 +2848,35 @@ mod tests {
         );
         assert_eq!(String::from(result.unwrap_err()), CANCELLED);
         assert_eq!(attempts, 2);
+    }
+
+    /// #18469: a folder with no mods says so instead of failing with an empty message; once
+    /// mods were left out, the error keeps naming them and the diagnostic that left them out.
+    #[test]
+    fn isolation_says_why_nothing_was_built() {
+        let _guard = scratch_state();
+        let result = isolated(|_| Err(Failed::Nothing), &|_| {});
+        assert!(matches!(result, Err(Failed::Nothing)), "{result:?}");
+        let result = isolated(
+            |skip| {
+                if !skip.is_empty() {
+                    return Err(Failed::Nothing);
+                }
+                Err(Failed::Mods {
+                    left: vec![LeftOut {
+                        id: "broken".into(),
+                        version: "1.0.0".into(),
+                        why: isolate::Why::OtherVersion,
+                    }],
+                    error: "compiler failure".into(),
+                    compiling: true,
+                })
+            },
+            &|_| {},
+        );
+        let error = String::from(result.unwrap_err());
+        assert!(error.contains("broken"), "{error}");
+        assert!(error.ends_with("compiler failure"), "{error}");
     }
 
     #[test]
