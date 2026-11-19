@@ -24,6 +24,11 @@ pub trait ServicesServerHost {
     #[access(WorldOnly)]
     #[service]
     fn players(&self) -> &dyn Players;
+    /// The profiles service.
+    /// Not on wasm: a frame resource; its methods are the imports.
+    #[access(WorldOnly)]
+    #[service]
+    fn profiles(&mut self) -> &mut dyn Profiles;
     /// The runtime_levels service.
     /// Not on wasm: a frame resource; its methods are the imports.
     #[access(WorldOnly)]
@@ -245,6 +250,38 @@ pub trait Players {
         )
     }
 }
+/// The profiles service, reached through its host: the game's own Minecraft profile resolver,
+/// the one behind dynamic player heads and `/fetchprofile`.
+pub trait Profiles {
+    /// Side: server.
+    /// Resolve a Minecraft account name (`Notch`) through the game's profile resolver: the
+    /// session server's profile, with the signed `textures` property a skin mod replaces a
+    /// player's skin with. The resolver caches answers and rate-limits itself; it reaches
+    /// Mojang's services whatever the server's online mode, and a name that is not a valid
+    /// player name is [`ProfileResolution::Done(None)`] without a lookup.
+    ///
+    /// The lookup runs in the background: the first call answers
+    /// [`ProfileResolution::Pending`], and a later call (poll it from `server_tick`) the answer,
+    /// which is also cached for the game's own uses.
+    fn resolve_name(&mut self, name: &str) -> ProfileResolution {
+        crate::world::phase::unprovided(
+            "Profiles::resolve_name",
+            "resolve_name",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+    /// Side: server.
+    /// Resolve an account's UUID through the game's profile resolver, as `resolve_name` does
+    /// by name. The profile's name is the account's current one.
+    fn resolve_id(&mut self, id: u128) -> ProfileResolution {
+        crate::world::phase::unprovided(
+            "Profiles::resolve_id",
+            "resolve_id",
+            crate::world::phase::LoadAccess::WorldOnly,
+        )
+    }
+}
+
 /// The runtime_levels service, reached through its host.
 /// Success from `open` or `unload` admits a queued request, not its completion.
 /// Apply failures are logged with the requesting mod and level id. A failed open
