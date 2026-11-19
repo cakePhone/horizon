@@ -414,6 +414,8 @@ mod tests {
         assert_eq!(behind.0, 3.0);
         // Turned to face the viewer: its corners and UVs in the opposite order.
         assert_eq!(behind.2, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
+        let corners = [[0.0, 0.0, 3.0], [0.0, 1.0, 3.0], [1.0, 1.0, 3.0], [1.0, 0.0, 3.0]];
+        assert_eq!(behind.1, corners);
         let order = |depth: f32| -> Vec<u32> {
             quads.iter().filter(|q| q.0 == depth).map(|q| q.3 >> 24).collect()
         };
