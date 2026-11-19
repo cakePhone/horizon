@@ -4123,17 +4123,29 @@ mod tests {
         assert!(failure.is_err());
         let log = fs::read_to_string(log_path()).unwrap();
         assert!(log.starts_with("error[E0425]"), "{log}");
-        assert!(
-            log.ends_with("The build failed: Could not export the engine\n"),
-            "{log}"
-        );
+        assert_result_then_cleanup(&log, "The build failed: Could not export the engine");
         assert!(!log.contains("Build completed."), "{log}");
         let success: Result<(), String> = logged(|_| Ok(()));
         success.unwrap();
         let log = fs::read_to_string(log_path()).unwrap();
-        assert!(log.ends_with("Build completed.\n"), "{log}");
+        assert_result_then_cleanup(&log, "Build completed.");
         assert!(!log.contains("error[E0425]"), "{log}");
         assert!(!log.contains("The build failed:"), "{log}");
+    }
+
+    /// The build's result is written before the cache cleanup (#18469), so it is the build's
+    /// last line: only the cleanup's own notes (what it freed, what it kept) may follow it.
+    fn assert_result_then_cleanup(log: &str, result: &str) {
+        let lines: Vec<&str> = log.lines().collect();
+        let Some(at) = lines.iter().rposition(|l| *l == result) else {
+            panic!("no `{result}` line: {log}");
+        };
+        assert!(
+            lines[at + 1..]
+                .iter()
+                .all(|l| l.starts_with("warning: ") || l.starts_with("Freed ")),
+            "only cleanup notes may follow `{result}`: {log}"
+        );
     }
 
     #[test]
