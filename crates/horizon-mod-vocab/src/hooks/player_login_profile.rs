@@ -1,11 +1,11 @@
 //! The `player_login_profile` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// A player's game profile at login, before the server accepts it: the
-    /// UUID and name the login authenticated and the properties the login
-    /// success would send. Change `properties` to send a different profile:
-    /// the login success and the player list use the changed list. The UUID
-    /// and name are the login's and are not changed here.
+    /// A player's game profile at login, before the server sends the login
+    /// success: the UUID and name the login authenticated and the properties
+    /// it would send. Change `properties` to send a different profile: the
+    /// login success and the player list use the changed list. The UUID and
+    /// name are the login's and are not changed here.
     ///
     /// In online mode `properties` holds the account's signed `textures`
     /// property, the skin; a proxy's forwarded properties are here too. An
