@@ -287,7 +287,8 @@ impl Game<'_> {
 /// `verts` seen through `gui`, into `quads` far to near: the faces that look
 /// away left out where the world's entity shader drops them
 /// (`mesher::culls_back`), each lit by `Lighting.ENTITY_IN_UI`
-/// (`entity_in_ui_shade`) from its own outward normal.
+/// (`entity_in_ui_shade`) from the side facing out, or the seen side of a
+/// two-sided quad.
 fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
     quads.clear();
     for (order, q) in verts.as_chunks::<4>().0.iter().enumerate() {
@@ -299,20 +300,28 @@ fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
         if back && horizon_client::mesher::culls_back(q[0].normal) {
             continue;
         }
-        let shade = super::perspective::entity_in_ui_shade(-n.normalize_or_zero());
+        // The outward normal; `entity.wgsl` lights the back of a two-sided
+        // quad (normal w -127 or -128) by the negated normal, its visible side.
+        let outward = -n.normalize_or_zero();
+        let two_sided = matches!(q[0].normal[3], -128 | -127);
+        let shade = super::perspective::entity_in_ui_shade(if back && two_sided {
+            -outward
+        } else {
+            outward
+        });
         let c = q[0].color;
         let ch = |s: u32| ((((c >> s) & 255) as f32 * shade) as u32) << s;
         let color = (c & 0xFF00_0000) | ch(0) | ch(8) | ch(16);
         let depth = p.iter().map(|v| v.z).sum::<f32>() / 4.0;
-        let mut corners = p.map(|v| v.to_array());
-        let mut uv: [[f32; 2]; 4] = std::array::from_fn(|i| q[i].uv);
-        if back {
-            // Seen from behind: the same quad in the opposite winding, as the
-            // inventory preview turns its `NoCull` faces.
-            corners.reverse();
-            uv.reverse();
-        }
-        quads.push((depth, corners, uv, color, order));
+        // Kept in their order (the HUD pipelines cull neither winding), so
+        // the quad splits along the same diagonal from either side.
+        quads.push((
+            depth,
+            p.map(|v| v.to_array()),
+            std::array::from_fn(|i| q[i].uv),
+            color,
+            order,
+        ));
     }
     // Translucent faces over what is behind them; faces at one depth (a layer
     // over its model) keep the model's order. Unstable on (depth, order), so no
@@ -410,17 +419,29 @@ mod tests {
         let mut quads = Vec::new();
         seen_quads(&verts, Mat4::IDENTITY, &mut quads);
         assert_eq!(quads.len(), 65, "the face seen from behind is kept");
-        let behind = quads.last().unwrap();
-        assert_eq!(behind.0, 3.0);
-        // Turned to face the viewer: its corners and UVs in the opposite order.
-        assert_eq!(behind.2, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
-        let corners = [[0.0, 0.0, 3.0], [0.0, 1.0, 3.0], [1.0, 1.0, 3.0], [1.0, 0.0, 3.0]];
-        assert_eq!(behind.1, corners);
+        assert_eq!(quads.last().unwrap().0, 3.0);
         let order = |depth: f32| -> Vec<u32> {
             quads.iter().filter(|q| q.0 == depth).map(|q| q.3 >> 24).collect()
         };
         assert_eq!(order(1.0), (0..64u32).step_by(2).collect::<Vec<_>>());
         assert_eq!(order(2.0), (1..64u32).step_by(2).collect::<Vec<_>>());
+    }
+
+    /// `entity.wgsl` lights the back of a two-sided quad as its visible side:
+    /// a face turned straight away is as bright as one turned straight at the
+    /// viewer. A one-sided shaded quad (w 127) keeps its own normal's light.
+    #[test]
+    fn the_back_of_a_two_sided_face_is_lit_as_its_visible_side() {
+        let shade_of = |normal: [i8; 4], toward: bool| {
+            let mut quads = Vec::new();
+            seen_quads(&face(0.0, normal, toward), Mat4::IDENTITY, &mut quads);
+            quads[0].3 & 0xFF
+        };
+        let front = shade_of([0, 0, 127, -127], true);
+        for w in [-127, -128] {
+            assert_eq!(shade_of([0, 0, -127, w], false), front, "w {w}");
+        }
+        assert!(shade_of([0, 0, -127, 127], false) < front);
     }
 
     #[test]
