@@ -367,11 +367,7 @@ fn logged<T, E: std::fmt::Display + From<String>>(
         log_warning(warning);
     }
     let result = build(cache.as_ref().map_err(String::as_str));
-    // Keep this build lease through installation/export, including failed builds. It does not
-    // exclude independent game starts; automatic trimming can conservatively retain the cache.
-    if let Ok(cache) = cache {
-        crate::storage::eviction::after_build_logged(&cache, append_log, log_warning);
-    }
+    // The result is written first: the cleanup below can take long on big caches.
     match &result {
         Ok(_) => {
             let _ = append_log("Build completed.");
@@ -379,6 +375,11 @@ fn logged<T, E: std::fmt::Display + From<String>>(
         Err(error) => {
             let _ = append_log(&format!("The build failed: {error}"));
         }
+    }
+    // Keep this build lease through installation/export, including failed builds. It does not
+    // exclude independent game starts; automatic trimming can conservatively retain the cache.
+    if let Ok(cache) = cache {
+        crate::storage::eviction::after_build_logged(&cache, append_log, log_warning);
     }
     result
 }
@@ -1629,7 +1630,7 @@ impl std::fmt::Display for Failed {
         match self {
             Self::Mods { error, .. } | Self::Other(error) => f.write_str(error),
             Self::Worlds(stake) => f.write_str(&stake.text),
-            Self::Nothing => Ok(()),
+            Self::Nothing => f.write_str(tr("There are no mods to build: the folder has none, or every mod was left out.")),
             Self::NoConsent => f.write_str(tr("Native mods run inside your game with your rights; mixins compile code into the game. Allow native mods in Settings, Storage, or pass --trust-native-code.")),
         }
     }
@@ -2655,6 +2656,11 @@ fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn nothing_to_build_says_so() {
+        assert!(!Failed::Nothing.to_string().is_empty());
+    }
 
     #[test]
     fn the_window_says_build_steps_in_player_words() {

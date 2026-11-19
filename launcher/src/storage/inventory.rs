@@ -259,6 +259,11 @@ impl Entry {
         self.bytes(&mut HashSet::new())
     }
 
+    /// Walks the entry once; sums over the result cost no disk access.
+    fn survey(&self) -> Result<Allocated, Error> {
+        survey(&self.path, self.links)
+    }
+
     fn clear(&self) -> Result<(), Error> {
         if !self.path.try_exists()? {
             return Ok(());
@@ -537,10 +542,16 @@ impl Storage {
                 Err(_) => unknown_revision = true,
             }
         }
+        // Each folder is walked once here and again only if it was cleared.
+        let mut surveyed = entries
+            .iter()
+            .map(Entry::survey)
+            .collect::<Result<Vec<_>, Error>>()?;
         let mut seen = HashSet::new();
         let units: Vec<_> = entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
                 let last_used = entry.last_used()?;
                 let tier = if entry.relative.starts_with("rust")
                     && entry.path.file_name().is_some_and(|name| {
@@ -566,7 +577,7 @@ impl Storage {
                     let Some(unit_revision) = entry.revision() else {
                         return Ok(Unit {
                             eligible: false,
-                            bytes: entry.bytes(&mut seen)?,
+                            bytes: sum_new(&surveyed[index], &mut seen),
                             last_used,
                             tier: Tier::Protected,
                         });
@@ -600,7 +611,7 @@ impl Storage {
                         .access()?
                         .check(crate::cache_cleanup::Proof::Lease)
                         .is_ok(),
-                    bytes: entry.bytes(&mut seen)?,
+                    bytes: sum_new(&surveyed[index], &mut seen),
                     last_used,
                     tier,
                 })
@@ -616,7 +627,7 @@ impl Storage {
         );
         let mut report = self.apply_retaining(Vec::new(), None, false, true)?;
         for row in &mut report.rows {
-            row.bytes = allocated(&entries, row.category)?;
+            row.bytes = allocated_of(&entries, &surveyed, row.category);
         }
         for (index, entry) in entries.iter().enumerate() {
             let row = report
@@ -630,18 +641,22 @@ impl Storage {
                 } else {
                     entry.clear()
                 };
+                // Only a unit that was cleared is measured again.
                 match result {
-                    Ok(()) => {}
+                    Ok(()) => surveyed[index] = entry.survey()?,
                     Err(
                         error @ (Error::Busy | Error::UnprovenExclusion | Error::IncompleteUnit),
-                    ) => row.kept.push(Kept {
-                        bytes: entry.bytes_alone()?,
-                        reason: native_mods::cache_error(error),
-                    }),
+                    ) => {
+                        surveyed[index] = entry.survey()?;
+                        row.kept.push(Kept {
+                            bytes: sum_new(&surveyed[index], &mut HashSet::new()),
+                            reason: native_mods::cache_error(error),
+                        });
+                    }
                     Err(error) => return Err(error),
                 }
             }
-            let remaining = entry.bytes_alone()?;
+            let remaining = sum_new(&surveyed[index], &mut HashSet::new());
             if !selected.contains(&index) && remaining > 0 {
                 row.kept.push(Kept {
                     bytes: remaining,
@@ -660,7 +675,7 @@ impl Storage {
             }
         }
         for row in &mut report.rows {
-            row.remaining_bytes = allocated(&entries, row.category)?;
+            row.remaining_bytes = allocated_of(&entries, &surveyed, row.category);
             row.freed_bytes = row.bytes.saturating_sub(row.remaining_bytes);
         }
         report.total_bytes = report.rows.iter().map(|row| row.bytes).sum();
@@ -804,6 +819,18 @@ fn allocated(entries: &[Entry], category: Category) -> Result<u64, Error> {
         .filter(|entry| entry.category == category)
         .try_fold(0u64, |bytes, entry| {
             Ok(bytes.saturating_add(entry.bytes(&mut seen)?))
+        })
+}
+
+/// `allocated` from walks already made: `surveyed[i]` belongs to `entries[i]`.
+fn allocated_of(entries: &[Entry], surveyed: &[Allocated], category: Category) -> u64 {
+    let mut seen = HashSet::new();
+    entries
+        .iter()
+        .zip(surveyed)
+        .filter(|(entry, _)| entry.category == category)
+        .fold(0u64, |bytes, (_, items)| {
+            bytes.saturating_add(sum_new(items, &mut seen))
         })
 }
 
