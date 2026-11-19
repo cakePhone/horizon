@@ -285,8 +285,9 @@ There is no daily run: `daily.yml` and the workflows it called (`ignored-tests.y
 `fn-replace-check.yml`, `native-dylib-probe.yml`, `launcher-windows-check.yml`), and `hot-paths.yml`,
 `paper-parity.yml` and `wasm-coverage.yml`, are gone from main. What runs Rust tests now:
 
-- `ci.yml`, on every push, pull request and merge-queue entry, on Linux: the workspace's unit, binary and integration
-  tests, its doc tests, the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no
+- `ci.yml`, on Linux, for a pull request or merge-queue entry that changes Rust (`tools/ci/rust_changes.py`; a push
+  to main of a commit the queue already tested only builds): the workspace's unit, binary and integration tests,
+  its doc tests, the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no
   GitHub runner holds), the mod points' wire loopback test, and the launcher's library and binary tests
   (`verify (launcher)`).
 - `launcher.yml`'s build, only when it builds a launcher release: the launcher's tests on Linux, macOS and Windows
@@ -295,8 +296,10 @@ There is no daily run: `daily.yml` and the workflows it called (`ignored-tests.y
   `#[ignore]`d toolchain test.
 
 So every other `#[ignore]`d test, the launcher's tests on Windows between launcher releases, and
-`horizon-mod-package`'s tests on Windows run in no workflow: run them by hand when a change reaches them
-(`cargo test -- --ignored` for the crate). The function-replacement check above is run by hand too.
+`horizon-mod-package`'s tests on Windows run in no workflow. Run them by hand when a change reaches them:
+`cargo test -p <crate> -- --ignored` for a crate's ignored tests, `cargo test` in `launcher/` on Windows, and
+`cargo test -p horizon-mod-package --features runtime-process` on Windows. The function-replacement check above is
+run by hand too.
 
 ### When it releases
 
