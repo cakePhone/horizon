@@ -287,18 +287,27 @@ There is no daily run: `daily.yml` and the workflows it called (`ignored-tests.y
 
 | Workflow (job) | When | What it tests |
 |---|---|---|
-| `ci.yml` (`verify (Rust tests)`) | Pull requests that change Rust (`tools/ci/rust_changes.py`), merge-queue entries, manual dispatch, pushes to main (only a build when the queue already tested the commit) | On Linux: the workspace's unit, binary, integration and doc tests, and the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no GitHub runner holds) |
-| `ci.yml` (`verify (launcher)`) | Pull requests, queue entries and pushes that change the launcher or a crate it builds; every manual dispatch | On Linux: the launcher's library and binary tests |
-| `ci.yml` (`verify (mod points)`) | Pull requests that change the mod points (`tools/ci/rust_changes.py`), merge-queue entries, pushes to main, manual dispatch | On Linux: `horizon-mod-points`' wire loopback test |
+| `ci.yml` (`verify (Rust tests)`) | A pull request that `tools/ci/rust_changes.py` selects (any change except `docs/`, Markdown, and Python under `tools/` and `tests/`; `rust_changes.py` and `release_train.py` themselves count); every merge-queue entry, manual dispatch and push to main (a push only builds when a merge-queue run already passed on its commit) | On Linux: the workspace's unit, binary, integration and doc tests, and the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no GitHub runner holds) |
+| `ci.yml` (`verify (launcher)`) | A pull request or push to main that `rust_changes.py --launcher` selects, or whose earlier commit can't be read; every manual dispatch. Never in the merge queue (the job's condition), and a push to main only builds when a merge-queue run already passed on its commit | On Linux: the launcher's library and binary tests |
+| `ci.yml` (`verify (mod points)`) | A pull request that `rust_changes.py` selects for the mod points (see `needs_mod_points`: crate manifests count, for example); every merge-queue entry, manual dispatch and push to main | On Linux: `horizon-mod-points`' wire loopback test |
 | `ci.yml` (`Windows ARM64 game and launcher`) | Manual dispatch only | The launcher's library tests and the `#[ignore]`d `rust_toolchain::tests::managed_arm64_toolchain_builds_the_game` |
-| `launcher.yml` (`build`) | A launcher release; a dry run (manual dispatch, the default); a push to `launcher` or `launcher-*` (builds without publishing) | The launcher's tests on Linux, macOS (two builds, one for x86-64) and Windows (x64, ARM64) |
+| `launcher.yml` (`build`) | See the workflow's `on:` (pushes to `main`, `launcher` and `launcher-*` within its path filter, a schedule, manual dispatch) and its `decide` job: it builds when a launcher release is due, and on every dry run (every run off main, and a dispatch with `dry_run`, the default), which publishes nothing | The launcher's tests on Linux, macOS (two builds, one for x86-64) and Windows (x64, ARM64) |
 | `game-build.yml`, from `nightly-build.yml` | Each Nightly build | On Windows x64: `horizon-client-render`'s `particles::polytone::tests::` |
-| `perf-wasm.yml` | Pull requests and pushes to main that change `horizon-perf`, `horizon-perf-format`, `horizon-bench`, `xtask` or the root manifests; manual dispatch | On Linux: `horizon-perf`'s `wasm` test |
-| `mod-registry.yml` | Pull requests and pushes to main that change `horizon-mod-package` or `horizon-mod-registry` | On Linux: `horizon-mod-registry`'s tests |
-| `telemetry-server.yml` | Pull requests and pushes to main that change `horizon-telemetry` or `horizon-telemetry-server` | On Linux: `horizon-telemetry-server`'s tests |
+| `perf-wasm.yml` | Pull requests and pushes to main that change `crates/horizon-perf/`, `crates/horizon-perf-format/`, `crates/horizon-bench/`, `xtask/`, `Cargo.lock`, `Cargo.toml` or the workflow itself; manual dispatch | On Linux: `horizon-perf`'s `wasm` test |
+| `mod-registry.yml` | Pull requests and pushes to main that change `crates/horizon-mod-package/`, `crates/horizon-mod-registry/` or the workflow itself | On Linux: `horizon-mod-registry`'s tests |
+| `telemetry-server.yml` | Pull requests and pushes to main that change `crates/horizon-telemetry/`, `crates/horizon-telemetry-server/` or the workflow itself | On Linux: `horizon-telemetry-server`'s tests |
+| `parity.yml`, from `ci.yml` (`parity`) and `run-parity.yml` | A pull request from this repository that changes a harness, an oracle, a probe or the runner, or carries the `run-parity` or `frame-identity` label; the `run-parity` label being added | On the self-hosted `horizon-game` runners: the harnesses the change can affect (`tools/parity.py --changed`) |
+| `parity-main.yml` | Pushes to main; manual dispatch | On the self-hosted macOS `horizon-parity-main` runner: the harnesses the push can affect |
+| `nightly.yml` (`audit`) | Once a day (03:07 in Paris); manual dispatch | On the self-hosted macOS `horizon-game` runners: every harness (`tools/parity.py --all`) |
 
-An `#[ignore]`d test also runs when an ordinary test starts it as a child process, as
-`processes_sharing_the_secrets_file_lose_nothing` starts `secrets_file_writer` (`launcher/src/account/tests.rs`).
+An `#[ignore]`d test also runs when something else starts it:
+
+- An ordinary test can start it as a child process, as `processes_sharing_the_secrets_file_lose_nothing` starts
+  `secrets_file_writer` (`launcher/src/account/tests.rs`).
+- A parity harness can run it with its oracle's output: the tests in `tools/ci/ignored-tests/parity-harness.txt`, such
+  as `vanilla_bed_poi_states`, which `tools/test_bed_poi_parity.py` (`bed_poi`) runs with `HORIZON_BED_POI_ORACLE` set.
+  Run these through their harness (`python3 tools/parity.py bed_poi`), not with `-- --ignored`: without the
+  oracle's file the test panics.
 
 Run by no workflow: the other `#[ignore]`d tests (many are marked `daily`), the launcher's tests on Windows between
 the runs above, and `horizon-mod-package`'s tests on Windows with its `runtime-process` feature. Run them by hand when
