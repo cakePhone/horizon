@@ -279,27 +279,24 @@ FNR_SIDE=client FNR_TARGET=aarch64-apple-darwin FNR_MIXINS_FROM_SOURCE=1 \
 The SDK producer's four hosted legs must also complete `prebuilt_game.py build`, `smoke`, `start`, `exports`
 and `pack` on their real hosts. A local source check does not substitute for these platform results.
 
-### Daily run
+### Tests outside the checks
 
-`.github/workflows/daily.yml` runs its legs once a day, at 09:00 UTC on main's head, and when a maintainer
-dispatches it (`-f commit=<sha>`, `-f dry_run=false` to write). One run runs and at most one waits; a newer waiting
-dispatch replaces an older waiting one. The schedule stops when main's head already has a completed real daily run;
-a hand dispatch never does, so it retries a run whose issues failed. Its legs are the workflows that left main pushes:
-the ignored-tests shards (`ignored-tests.yml`: on GitHub's runners, with no vanilla data, so `--without-data` leaves out
-the tests that need it and says how many), the wasm guest stacks (`wasm-mods.yml`; its fixture job needs the data and
-runs by dispatch only), `fn-replace-check.yml`, the native linkage probe (`native-dylib-probe.yml`) and the launcher's Windows runtime-lease
-tests (`launcher-windows-check.yml`), each called with the commit. The daily run publishes nothing and gates nothing:
-the Nightly does not wait for it. Its summary (`tools/ci/daily_summary.py`) reads each leg's result and its sanitised
-verdict file, never a log, and files issues:
+There is no daily run: `daily.yml` and the workflows it called (`ignored-tests.yml`, `wasm-mods.yml`,
+`fn-replace-check.yml`, `native-dylib-probe.yml`, `launcher-windows-check.yml`), and `hot-paths.yml`,
+`paper-parity.yml` and `wasm-coverage.yml`, are gone from main. What runs Rust tests now:
 
-- a failing test: one issue `Daily: <crate> <test>` (label `bug`) with its panic location and the first daily run that
-  saw it; later runs comment on it, and the first run where it passes closes it. A leg that failed without a test
-  name gets one issue per leg.
+- `ci.yml`, on every push, pull request and merge-queue entry, on Linux: the workspace's unit, binary and integration
+  tests, its doc tests, the `#[ignore]`d `mod_content::tests::` (they pass at once without the vanilla data, which no
+  GitHub runner holds), the mod points' wire loopback test, and the launcher's library and binary tests
+  (`verify (launcher)`).
+- `launcher.yml`'s build, only when it builds a launcher release: the launcher's tests on Linux, macOS and Windows
+  (x86-64 and ARM64).
+- `ci.yml`'s Windows ARM64 job, only when a maintainer dispatches it: the launcher's library tests and one
+  `#[ignore]`d toolchain test.
 
-Only a run on `main` with `dry_run` false files issues; any other run prints what it would do.
-
-The tests that need the vanilla data run nowhere in the daily run, as no GitHub runner holds it. `hot-paths.yml`,
-`paper-parity.yml` and `wasm-coverage.yml` have no schedule either: they run when a maintainer dispatches them.
+So every other `#[ignore]`d test, the launcher's tests on Windows between launcher releases, and
+`horizon-mod-package`'s tests on Windows run in no workflow: run them by hand when a change reaches them
+(`cargo test -- --ignored` for the crate). The function-replacement check above is run by hand too.
 
 ### When it releases
 
