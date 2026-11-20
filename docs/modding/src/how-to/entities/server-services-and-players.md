@@ -10,7 +10,7 @@ players. Native and wasm mods use the same calls.
 | `host.commands()` | `run_command(line)` runs through the console command path with permission level 4. `feedback(text)` answers the command source. |
 | `host.messages()` | `broadcast(text)` fires the broadcast hook and writes to the server log. `text_allowed(text)` checks the server chat filter. |
 | `host.players()` | `server_players()` returns `Vec<PlayerRef>` in connection order. `acting_player()` returns the optional player whose state is active in the hook. `player_by_name(name)` finds a connected real player by case-insensitive account name, not nickname. |
-| `host.profiles()` | `resolve_name(name)` and `resolve_id(uuid)` ask the game's Minecraft profile resolver, the one behind dynamic player heads and `/fetchprofile`, for an account's profile. The first call answers `ProfileResolution::Pending`; poll it from `server_tick` for `Done(Some(profile))`, or `Done(None)` for no such account. The resolver caches answers and reaches Mojang's services whatever the server's online mode. |
+| `host.profiles()` | `resolve_name(name)` and `resolve_id(uuid)` ask the game's Minecraft profile resolver, the one behind dynamic player heads and `/fetchprofile`, for an account's profile. The first call answers `ProfileResolution::Pending`; poll it from `server_tick` for `Done(Some(profile))`, or `Done(None)` when there is no such account or the lookup failed (for example, a rate-limited lookup). `Done(None)` does not prove the account is missing. The resolver caches answers and reaches Mojang's services whatever the server's online mode. |
 | `host.levels()` | `list_levels()` returns loaded server levels in vanilla dimension order, or an empty list before a server world opens. |
 
 Player and level lookup services accept `&dyn ServerHost` and do not mutate the
@@ -68,7 +68,9 @@ can still refuse the player.
 `host.profiles().resolve_name("Notch")` (or `resolve_id(uuid)`) returns the game's cached profile
 resolver answer: `ProfileResolution::Pending` while the background lookup runs, then
 `ProfileResolution::Done(Some(profile))` with the account's UUID, current name and properties, or
-`ProfileResolution::Done(None)` for no such account. The `textures` property is the signed skin;
+`ProfileResolution::Done(None)` when there is no such account or the lookup failed (for example,
+Mojang rate-limited it). `Done(None)` does not prove the account is missing; retry later when the
+distinction matters. The `textures` property is the signed skin;
 `ProfileProperty::new` makes one. The resolver is the game's own, so the lookup uses the TLS stack
 the game already links and the answers `/fetchprofile` and dynamic player heads use; a mod needs no
 HTTP client of its own. Start the lookup from a command or `server_tick` and keep the result in your

@@ -3,6 +3,11 @@
 //! `SkinManager` lookup (which texture a player shows, and when the default
 //! one) and `SkinTextureDownloader.processLegacySkin`.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 /// `Property.hasSignature` and the services key check, as authlib's
 /// `SignatureState`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,6 +274,8 @@ pub struct Resolver {
     entries: std::collections::HashMap<NameOrId, Entry>,
     done: std::sync::mpsc::Receiver<(NameOrId, Option<ResolvedProfile>)>,
     send: std::sync::mpsc::Sender<(NameOrId, Option<ResolvedProfile>)>,
+    /// Fetch threads still running; [`MAX_FETCHES`] bounds them.
+    active: Arc<AtomicUsize>,
     last_sweep: std::time::Instant,
     heads: HeadProfiles,
 }
@@ -280,6 +287,9 @@ struct Entry {
 /// `ProfileResolver.Cached`'s cache bounds.
 const MAX_PROFILES: usize = 256;
 const PROFILE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// The most profile fetches that may run at once. Each is an OS thread and an HTTP request; a
+/// mod calling `resolve_id` in a loop must not exhaust them.
+const MAX_FETCHES: usize = 16;
 
 /// `StringUtil.isValidPlayerName` (the check `fetchByName` makes first).
 fn valid_player_name(name: &str) -> bool {
@@ -337,6 +347,7 @@ impl Resolver {
             entries: Default::default(),
             done,
             send,
+            active: Arc::new(AtomicUsize::new(0)),
             last_sweep: std::time::Instant::now(),
             heads: HeadProfiles::default(),
         }
@@ -381,23 +392,53 @@ impl Resolver {
         // `fetchByName` refuses an invalid name without a fetch; like every
         // other empty answer that is the cached result.
         let resolved = matches!(key, NameOrId::Name(name) if !valid_player_name(name));
-        self.entries.insert(
-            key.clone(),
-            Entry {
-                touched: std::time::Instant::now(),
-                resolved: resolved.then_some(None),
-            },
-        );
         if resolved {
+            self.entries.insert(
+                key.clone(),
+                Entry {
+                    touched: std::time::Instant::now(),
+                    resolved: Some(None),
+                },
+            );
             return Resolve::Done(None);
         }
+        // At the cap, leave the key uncached and answer `Pending`: the caller
+        // polls, and a later call starts the fetch once a thread is free.
+        if self.active.load(Ordering::Relaxed) >= MAX_FETCHES {
+            return Resolve::Pending;
+        }
+        let entry_key = key.clone();
+        self.entries.insert(
+            entry_key.clone(),
+            Entry {
+                touched: std::time::Instant::now(),
+                resolved: None,
+            },
+        );
+        self.active.fetch_add(1, Ordering::Relaxed);
+        let active = Arc::clone(&self.active);
         let (key, send) = (key.clone(), self.send.clone());
-        std::thread::spawn(move || {
-            let resolved = crate::auth::discovery()
-                .ok()
-                .and_then(|doc| resolve_profile(&key, &doc));
-            let _ = send.send((key, resolved));
-        });
+        let spawned = std::thread::Builder::new()
+            .name("profile-fetch".into())
+            .spawn(move || {
+                /// Releases the fetch slot when the thread ends, including on a panic.
+                struct Fetch(Arc<AtomicUsize>);
+                impl Drop for Fetch {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _fetch = Fetch(active);
+                let resolved = crate::auth::discovery()
+                    .ok()
+                    .and_then(|doc| resolve_profile(&key, &doc));
+                let _ = send.send((key, resolved));
+            });
+        if spawned.is_err() {
+            // The OS refused a thread: release the slot and let a later call retry.
+            self.active.fetch_sub(1, Ordering::Relaxed);
+            self.entries.remove(&entry_key);
+        }
         Resolve::Pending
     }
 }
@@ -1360,6 +1401,20 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_fetch_cap_answers_pending_without_caching() {
+        let mut resolver = super::Resolver::new();
+        resolver
+            .active
+            .store(super::MAX_FETCHES, std::sync::atomic::Ordering::Relaxed);
+        let key = super::NameOrId::Id(7);
+        assert!(matches!(resolver.state(&key), super::Resolve::Pending));
+        assert!(!resolver.entries.contains_key(&key));
+        resolver
+            .active
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
     #[test]
     fn head_profile_cache_matches_uncached_and_is_bounded() {
         use base64::Engine;

@@ -1197,7 +1197,8 @@ impl ProfileProperty {
 pub enum ProfileResolution {
     /// The lookup is still running; ask again on a later tick.
     Pending,
-    /// The services' answer: the profile, or `None` for no such account or no answer.
+    /// The services' answer: the profile, or `None` when there is no such account or the lookup
+    /// failed (for example, a rate-limited lookup). `None` does not prove the account is missing.
     Done(Option<GameProfile>),
 }
 

@@ -1095,6 +1095,37 @@ pub fn native_player_login_profile(
     crate::native_client_hooks::player_login_profile(player, name, properties);
 }
 
+/// Holds an admitted login's uuid until the login reaches play. Dropping it while armed releases
+/// the uuid, including while a panic unwinds.
+struct Admission<'a> {
+    shared: &'a Shared,
+    uuid: u128,
+    armed: bool,
+}
+
+impl<'a> Admission<'a> {
+    fn new(shared: &'a Shared, uuid: u128) -> Self {
+        Self {
+            shared,
+            uuid,
+            armed: true,
+        }
+    }
+
+    /// The login reached play, whose connection releases the uuid when it closes.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Admission<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.shared.release(self.uuid);
+        }
+    }
+}
+
 fn serve_login(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -1218,6 +1249,9 @@ fn serve_login(
         lost(shared, &user, &text);
         return Ok(());
     }
+    // Holds the admitted uuid until the login reaches play. A panic in a mod listener or in a
+    // later login step drops it, which releases the uuid.
+    let mut admitted = Admission::new(shared.as_ref(), uuid);
     // The mods may change the profile the login success carries, before it is sent: a skin mod
     // replaces the `textures` property here. A list past the profile limits keeps the login's own.
     if mod_api::__private::listened(mod_api::HookId::PlayerLoginProfile) {
@@ -1254,17 +1288,16 @@ fn serve_login(
     let result = login_and_configure(&mut c, shared, uuid, &name, &user, properties);
     match result {
         Ok(Some(parts)) => {
+            admitted.disarm();
             play(c, shared, parts, address, counted, expected.is_some());
             Ok(())
         }
         Ok(None) => {
             put_back();
-            shared.release(uuid);
             Ok(())
         }
         Err(err) => {
             put_back();
-            shared.release(uuid);
             // ServerConfigurationPacketListenerImpl.onDisconnect.
             let profile = format!("{name} ({})", uuid_string(uuid));
             lost(shared, &profile, "Disconnected");
