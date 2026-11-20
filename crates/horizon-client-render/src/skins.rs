@@ -453,17 +453,9 @@ impl Resolver {
                 None => Resolve::Pending,
             };
         }
-        // `fetchByName` refuses an invalid name without a fetch; like every
-        // other empty answer that is the cached result.
-        let resolved = matches!(key, NameOrId::Name(name) if !valid_player_name(name));
-        if resolved {
-            self.entries.insert(
-                key.clone(),
-                Entry {
-                    touched: std::time::Instant::now(),
-                    resolved: Some(None),
-                },
-            );
+        // `fetchByName` refuses an invalid name without a fetch. Answer without
+        // caching: distinct invalid names must not fill the cache between sweeps.
+        if matches!(key, NameOrId::Name(name) if !valid_player_name(name)) {
             return Resolve::Done(None);
         }
         // At the cap, leave the key uncached and answer `Pending`: the caller
@@ -1483,6 +1475,14 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_invalid_name_is_answered_without_being_cached() {
+        let mut resolver = super::Resolver::new();
+        let key = super::NameOrId::Name("not a name!".into());
+        assert!(matches!(resolver.state(&key), super::Resolve::Done(None)));
+        assert!(resolver.entries.is_empty());
+    }
+
     #[test]
     fn the_fetch_cap_answers_pending_without_caching() {
         let mut resolver = super::Resolver::new();

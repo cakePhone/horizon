@@ -251,14 +251,17 @@ pub trait Players {
     }
 }
 /// The profiles service, reached through its host: the game's own Minecraft profile resolver,
-/// the one behind dynamic player heads and `/fetchprofile`.
+/// the one behind dynamic player heads and `/fetchprofile`. Unlike `host.profile_by_uuid` and
+/// `host.profile_by_name`, which answer from the server's online players and user cache without
+/// asking Mojang, these lookups ask the session server and can resolve an account the server has
+/// never seen, whatever its online mode.
 pub trait Profiles {
     /// Side: server.
     /// Resolve a Minecraft account name (`Notch`) through the game's profile resolver: the
     /// session server's profile, with the signed `textures` property a skin mod replaces a
     /// player's skin with. The resolver caches answers and rate-limits itself; it reaches
     /// Mojang's services whatever the server's online mode, and a name that is not a valid
-    /// player name is [`ProfileResolution::Done(None)`] without a lookup.
+    /// player name is [`ProfileResolution::Done`] with `None` without a lookup.
     ///
     /// The lookup runs in the background: the first call answers
     /// [`ProfileResolution::Pending`], and a later call (poll it from `server_tick`) the answer,
