@@ -2802,9 +2802,12 @@ mod tests {
     fn a_modded_login_profile_reaches_the_login_success() {
         use mod_api::{Hooks, ModEntry, ProfileProperty};
 
+        // The library's test adapter installs process-wide, once; it must dispatch this hook.
+        crate::native_client_hooks::test_hooks::install();
+
         #[derive(Default)]
         struct Skin;
-        #[mod_api::horizon_mod]
+        #[mod_api::__subscriptions]
         impl Hooks for Skin {
             fn player_login_profile(&self, event: &mut mod_api::PlayerLoginProfileEvent<'_>) {
                 event.properties.retain(|p| p.name != "textures");
@@ -2818,10 +2821,10 @@ mod tests {
 
         #[derive(Default)]
         struct TooMany;
-        #[mod_api::horizon_mod]
+        #[mod_api::__subscriptions]
         impl Hooks for TooMany {
             fn player_login_profile(&self, event: &mut mod_api::PlayerLoginProfileEvent<'_>) {
-                event.properties = (0..17)
+                *event.properties = (0..17)
                     .map(|i| ProfileProperty::new(format!("p{i}"), "v".into(), None))
                     .collect();
             }

@@ -259,10 +259,10 @@ pub trait Profiles {
     /// Side: server.
     /// Resolve a Minecraft account name (`Notch`) through the game's profile resolver: the
     /// session server's profile, with the signed `textures` property a skin mod replaces a
-    /// player's skin with. The resolver caches answers and paces new lookups at 60 a minute for
-    /// the whole server, so it stays within Mojang's rate limit; it reaches Mojang's services
-    /// whatever the server's online mode, and a name that is not a valid player name is
-    /// [`ProfileResolution::Done`] with `None` without a lookup.
+    /// player's skin with. The resolver caches answers and paces a mod's new lookups at 60 a
+    /// minute, so it stays within Mojang's rate limit; the game's own lookups are not paced. It
+    /// reaches Mojang's services whatever the server's online mode, and a name that is not a
+    /// valid player name is [`ProfileResolution::Done`] with `None` without a lookup.
     ///
     /// The lookup runs in the background: the first call answers
     /// [`ProfileResolution::Pending`], and a later call (poll it from `server_tick`) the answer,

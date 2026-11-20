@@ -357,6 +357,9 @@ const PROFILE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60)
 /// The most profile fetches that may run at once. Each is an OS thread and an HTTP request; a
 /// mod calling `resolve_id` in a loop must not exhaust them.
 const MAX_FETCHES: usize = 16;
+/// The fetch slots a mod's lookups may use. The last one is kept for the game's own lookups
+/// (`/fetchprofile`, skins), so a mod polling every tick cannot stall them.
+const MOD_FETCHES: usize = MAX_FETCHES - 1;
 /// New profile lookups that may start a minute. Mojang rate-limits by IP, so one mod must not be
 /// able to spend the server's whole allowance at once; one slot comes back each second.
 const LOOKUPS_PER_MINUTE: u32 = 60;
@@ -424,19 +427,35 @@ impl Resolver {
             heads: HeadProfiles::default(),
         }
     }
+    /// Adds back the slots `elapsed` earns, capped at the minute's budget, and advances the
+    /// timestamp by every whole second: after an idle period the budget must not refill again
+    /// on each of the next calls.
+    fn refill_lookup_budget(&mut self, elapsed: std::time::Duration) {
+        let seconds = elapsed.as_secs();
+        if seconds == 0 {
+            return;
+        }
+        self.lookups = (self.lookups + seconds.min(u64::from(LOOKUPS_PER_MINUTE)) as u32)
+            .min(LOOKUPS_PER_MINUTE);
+        self.last_lookup_refill += std::time::Duration::from_secs(seconds);
+    }
     /// Takes one of the minute's new-lookup slots, adding back one a second.
     fn take_lookup_budget(&mut self) -> bool {
-        let elapsed = self.last_lookup_refill.elapsed();
-        let refill = elapsed.as_secs().min(u64::from(LOOKUPS_PER_MINUTE)) as u32;
-        if refill > 0 {
-            self.lookups = (self.lookups + refill).min(LOOKUPS_PER_MINUTE);
-            self.last_lookup_refill += std::time::Duration::from_secs(u64::from(refill));
-        }
+        self.refill_lookup_budget(self.last_lookup_refill.elapsed());
         if self.lookups == 0 {
             return false;
         }
         self.lookups -= 1;
         true
+    }
+    /// Whether a new fetch may start: within the caller's worker cap, and for a mod within the
+    /// minute's budget. Takes a budget slot when it answers true.
+    fn may_start_fetch(&mut self, paced: bool) -> bool {
+        let cap = if paced { MOD_FETCHES } else { MAX_FETCHES };
+        if self.active.load(Ordering::Relaxed) >= cap {
+            return false;
+        }
+        !paced || self.take_lookup_budget()
     }
     /// `CacheBuilder.expireAfterAccess` with `maximumSize`.
     fn sweep(&mut self) {
@@ -456,8 +475,19 @@ impl Resolver {
             self.entries.remove(&oldest);
         }
     }
-    /// How the resolution of `key` stands, starting it the first time.
+    /// How the resolution of `key` stands, starting it the first time. A mod's lookups share
+    /// the minute's budget and leave the last fetch slot to the game; the game's own callers use
+    /// [`Resolver::state_for_game`].
     pub fn state(&mut self, key: &NameOrId) -> Resolve {
+        self.state_with(key, true)
+    }
+    /// As [`Resolver::state`], for the game's own lookups (`/fetchprofile`, skins): they skip
+    /// the mod budget and may use the fetch slot mods leave free, so a mod polling every tick
+    /// cannot stall them.
+    pub fn state_for_game(&mut self, key: &NameOrId) -> Resolve {
+        self.state_with(key, false)
+    }
+    fn state_with(&mut self, key: &NameOrId, paced: bool) -> Resolve {
         while let Ok((key, resolved)) = self.done.try_recv() {
             self.entries.insert(
                 key,
@@ -480,14 +510,11 @@ impl Resolver {
         if matches!(key, NameOrId::Name(name) if !valid_player_name(name)) {
             return Resolve::Done(None);
         }
-        // At the cap, leave the key uncached and answer `Pending`: the caller
-        // polls, and a later call starts the fetch once a thread is free.
-        if self.active.load(Ordering::Relaxed) >= MAX_FETCHES {
-            return Resolve::Pending;
-        }
-        // Pace new lookups too: fresh names must not keep every worker busy and spend the
-        // server's Mojang allowance. At the budget, answer `Pending` without caching.
-        if !self.take_lookup_budget() {
+        // At the cap, leave the key uncached and answer `Pending`: the caller polls, and a later
+        // call starts the fetch once a thread is free. Mods also leave the last slot to the
+        // game and spend the minute's budget; at either limit they answer `Pending` without
+        // caching, so a later call retries.
+        if !self.may_start_fetch(paced) {
             return Resolve::Pending;
         }
         let entry_key = key.clone();
@@ -702,7 +729,7 @@ pub fn head_skin(
         if p.info.textures.is_some() {
             return None;
         }
-        match resolver.state(key) {
+        match resolver.state_for_game(key) {
             Resolve::Done(Some(profile)) => {
                 let (_, value, signature) = profile
                     .properties
@@ -1550,6 +1577,46 @@ mod tests {
         assert!(resolver.take_lookup_budget());
         assert!(resolver.take_lookup_budget());
         assert!(!resolver.take_lookup_budget());
+    }
+
+    #[test]
+    fn an_idle_period_refills_the_budget_once() {
+        let mut resolver = super::Resolver::new();
+        resolver.lookups = 0;
+        let before = resolver.last_lookup_refill;
+        resolver.refill_lookup_budget(std::time::Duration::from_secs(3600));
+        assert_eq!(resolver.lookups, super::LOOKUPS_PER_MINUTE);
+        assert_eq!(
+            resolver.last_lookup_refill.duration_since(before),
+            std::time::Duration::from_secs(3600),
+            "the whole idle period is consumed, not just the minute the budget caps at"
+        );
+        for _ in 0..super::LOOKUPS_PER_MINUTE {
+            assert!(resolver.take_lookup_budget());
+        }
+        assert!(!resolver.take_lookup_budget());
+    }
+
+    #[test]
+    fn a_game_lookup_keeps_a_fetch_slot_and_skips_the_mod_budget() {
+        let mut resolver = super::Resolver::new();
+        resolver
+            .active
+            .store(super::MOD_FETCHES, std::sync::atomic::Ordering::Relaxed);
+        resolver.lookups = 0;
+        resolver.last_lookup_refill = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        assert!(
+            !resolver.may_start_fetch(true),
+            "mods leave the last fetch slot to the game"
+        );
+        assert!(
+            resolver.may_start_fetch(false),
+            "the game skips the mod budget and may use the last slot"
+        );
+        resolver
+            .active
+            .store(super::MAX_FETCHES, std::sync::atomic::Ordering::Relaxed);
+        assert!(!resolver.may_start_fetch(false));
     }
 
     #[test]

@@ -10,7 +10,7 @@ players. Native and wasm mods use the same calls.
 | `host.commands()` | `run_command(line)` runs through the console command path with permission level 4. `feedback(text)` answers the command source. |
 | `host.messages()` | `broadcast(text)` fires the broadcast hook and writes to the server log. `text_allowed(text)` checks the server chat filter. |
 | `host.players()` | `server_players()` returns `Vec<PlayerRef>` in connection order. `acting_player()` returns the optional player whose state is active in the hook. `player_by_name(name)` finds a connected real player by case-insensitive account name, not nickname. |
-| `host.profiles()` | `resolve_name(name)` and `resolve_id(uuid)` ask the game's Minecraft profile resolver, the one behind dynamic player heads and `/fetchprofile`, for an account's profile. The first call answers `ProfileResolution::Pending`; poll it from `server_tick` for `Done(Some(profile))`, or `Done(None)` when there is no such account or the lookup failed (for example, a rate-limited lookup). `Done(None)` does not prove the account is missing. The resolver caches answers, paces new lookups at 60 a minute for the whole server, and reaches Mojang's services whatever the server's online mode. |
+| `host.profiles()` | `resolve_name(name)` and `resolve_id(uuid)` ask the game's Minecraft profile resolver, the one behind dynamic player heads and `/fetchprofile`, for an account's profile. The first call answers `ProfileResolution::Pending`; poll it from `server_tick` for `Done(Some(profile))`, or `Done(None)` when there is no such account or the lookup failed (for example, a rate-limited lookup). `Done(None)` does not prove the account is missing. The resolver caches answers, paces a mod's new lookups at 60 a minute, and reaches Mojang's services whatever the server's online mode. |
 | `host.levels()` | `list_levels()` returns loaded server levels in vanilla dimension order, or an empty list before a server world opens. |
 
 Player and level lookup services accept `&dyn ServerHost` and do not mutate the
@@ -73,9 +73,9 @@ online mode. The first call answers `ProfileResolution::Pending` while the backg
 poll it from a command or `server_tick` until `ProfileResolution::Done(Some(profile))` with the
 account's UUID, current name and properties, or `ProfileResolution::Done(None)` when there is no
 such account or the lookup failed (for example, Mojang rate-limited it). `Done(None)` does not
-prove the account is missing; retry later when the distinction matters. New lookups are paced at
-60 a minute for the whole server, so `Pending` can also mean that budget is refilling; poll again
-later. The resolver caches answers and uses the TLS stack the game already links, so a mod needs no
+prove the account is missing; retry later when the distinction matters. A mod's new lookups are
+paced at 60 a minute (the game's own lookups are not), so `Pending` can also mean that budget is
+refilling; poll again later. The resolver caches answers and uses the TLS stack the game already links, so a mod needs no
 HTTP client of its own. Keep the result in your own state; do not block a login hook on it.
 
 To change a skin, `player.set_profile_property(host, "textures", value, signature)` sets the
