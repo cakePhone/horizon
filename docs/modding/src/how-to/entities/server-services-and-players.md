@@ -56,6 +56,35 @@ current dimension, even when another dimension is ticking. On a client they
 identify the local player's level. Unknown, disconnected, replaced or stale handles
 return `None`.
 
+## Profiles and skins
+
+Two server-side lookups answer different questions.
+
+`host.profile_by_uuid(uuid)` and `host.profile_by_name(name)` (any case) return the `GameProfile`
+the server already knows: an online player's, with its properties, else the name from the user
+cache (`usercache.json`, on a dedicated server), without properties. Neither asks Mojang, and
+`None` means neither the server nor its cache knows the player. `player.profile(host)` returns a
+connected or acting player's login profile, including the signed `textures` property.
+
+`host.profiles().resolve_name("Notch")` (or `resolve_id(uuid)`) asks the game's own Minecraft
+profile resolver, the one behind dynamic player heads and `/fetchprofile`, for an account's current
+session-server profile. This is the asynchronous Mojang lookup, and it works whatever the server's
+online mode. The first call answers `ProfileResolution::Pending` while the background lookup runs;
+poll it from a command or `server_tick` until `ProfileResolution::Done(Some(profile))` with the
+account's UUID, current name and properties, or `ProfileResolution::Done(None)` when there is no
+such account or the lookup failed (for example, Mojang rate-limited it). `Done(None)` does not
+prove the account is missing; retry later when the distinction matters. The resolver caches answers
+and uses the TLS stack the game already links, so a mod needs no HTTP client of its own. Keep the
+result in your own state; do not block a login hook on it.
+
+To change a skin, `player.set_profile_property(host, "textures", value, signature)` sets the
+`textures` property (Mojang's base64 value and its signature). Other players see it once
+`player.refresh(host)` sends the player to them again; the player's own client keeps its current
+skin until they change level or join again. A property set this way is published and returned by
+`profile_by_uuid` and `profile_by_name`; `player.profile(host)` keeps returning the properties the
+player logged in with. The `player_login_profile` hook below does this before the login success
+instead, so the player's own client gets the skin at once and no refresh is needed.
+
 ## A player's profile at login
 
 `player_login_profile` runs once for each accepted login, after the name,
@@ -68,19 +97,6 @@ and keep the list inside the profile's limits: at most 16 properties, names of 6
 UTF-16 units, values of 32767 and signatures of 1024. A list past a limit is
 refused and the login's own properties are sent. `player_login` follows later and
 can still refuse the player.
-
-## Resolving an account's profile
-
-`host.profiles().resolve_name("Notch")` (or `resolve_id(uuid)`) returns the game's cached profile
-resolver answer: `ProfileResolution::Pending` while the background lookup runs, then
-`ProfileResolution::Done(Some(profile))` with the account's UUID, current name and properties, or
-`ProfileResolution::Done(None)` when there is no such account or the lookup failed (for example,
-Mojang rate-limited it). `Done(None)` does not prove the account is missing; retry later when the
-distinction matters. The `textures` property is the signed skin;
-`ProfileProperty::new` makes one. The resolver is the game's own, so the lookup uses the TLS stack
-the game already links and the answers `/fetchprofile` and dynamic player heads use; a mod needs no
-HTTP client of its own. Start the lookup from a command or `server_tick` and keep the result in your
-own state; do not block a login hook on it.
 
 ## Messages and visibility
 
@@ -204,6 +220,14 @@ read the distances in chunks; `host.server_set_view_distance(d)` and
 dedicated server and return `false` otherwise. `server.properties` is not
 written.
 
+Mob and packet diagnostics are separate switches that are off by default.
+`host.mob_cost_sampling(true)` times each mob's own tick, riders included, summed
+by level and mob type; `host.take_mob_costs()` returns what was sampled since the
+last call, costliest first, and clears it. `host.count_packets(true)` counts every
+player's play packets by id and direction, for the whole server;
+`player.take_packet_counts(host)` returns one player's counts since the last call
+and clears them. Both switches return `false` on a client.
+
 ## World mutation: chunks, blocks shown and placed as a player
 
 For mods that write blocks by other means (an editor's own section writes, a schematic) and then have to make the game and the client agree. Server only. Each method returns `Result` and names every refusal; a refusal changes nothing.
@@ -252,3 +276,12 @@ The inventory menu has no slot for body or saddle. All four player data writes
 (`set_inventory_slot`, `set_ender_chest_slot`, `give_stack`, `set_persistent_data`)
 are undone by an open transaction abort; equipment effects and overflow drops
 wait for the outermost commit.
+
+## Player statistics
+
+Statistics are read and replaced whole, not one at a time. `player.statistics(host)` returns all of a player's
+statistics as the JSON text of their `stats/<uuid>.json` save file, or `None` for a stale or unavailable player and on
+a client. `player.set_statistics(host, json)` replaces all of them with a JSON object of that form and returns `false`,
+changing nothing, for text that is not an object or for a stale, unavailable or dead player. A statistic the text lacks
+goes back to 0, scoreboard criteria follow the changed values, and the client sees them on its next request. Server only;
+`player_stat_award` is not heard.
