@@ -75,8 +75,9 @@ account's UUID, current name and properties, or `ProfileResolution::Done(None)` 
 such account or the lookup failed (for example, Mojang rate-limited it). `Done(None)` does not
 prove the account is missing; retry later when the distinction matters. A mod's new lookups are
 paced at 60 a minute (the game's own lookups are not), so `Pending` can also mean that budget is
-refilling; poll again later. The resolver caches answers and uses the TLS stack the game already links, so a mod needs no
-HTTP client of its own. Keep the result in your own state; do not block a login hook on it.
+refilling; poll again later. The resolver caches answers and uses the TLS stack the game already
+links, so a mod needs no HTTP client of its own. Keep the result in your own state; do not block a
+login hook on it.
 
 To change a skin, `player.set_profile_property(host, "textures", value, signature)` sets the
 `textures` property (Mojang's base64 value and its signature). Other players see it once
