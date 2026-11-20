@@ -259,13 +259,15 @@ pub trait Profiles {
     /// Side: server.
     /// Resolve a Minecraft account name (`Notch`) through the game's profile resolver: the
     /// session server's profile, with the signed `textures` property a skin mod replaces a
-    /// player's skin with. The resolver caches answers and rate-limits itself; it reaches
-    /// Mojang's services whatever the server's online mode, and a name that is not a valid
-    /// player name is [`ProfileResolution::Done`] with `None` without a lookup.
+    /// player's skin with. The resolver caches answers and paces new lookups at 60 a minute for
+    /// the whole server, so it stays within Mojang's rate limit; it reaches Mojang's services
+    /// whatever the server's online mode, and a name that is not a valid player name is
+    /// [`ProfileResolution::Done`] with `None` without a lookup.
     ///
     /// The lookup runs in the background: the first call answers
     /// [`ProfileResolution::Pending`], and a later call (poll it from `server_tick`) the answer,
-    /// which is also cached for the game's own uses.
+    /// which is also cached for the game's own uses. `Pending` can also mean the per-minute
+    /// budget is refilling; poll again later.
     fn resolve_name(&mut self, name: &str) -> ProfileResolution {
         crate::world::phase::unprovided(
             "Profiles::resolve_name",
@@ -275,7 +277,8 @@ pub trait Profiles {
     }
     /// Side: server.
     /// Resolve an account's UUID through the game's profile resolver, as `resolve_name` does
-    /// by name. The profile's name is the account's current one.
+    /// by name. The profile's name is the account's current one, and new lookups share the same
+    /// per-minute budget.
     fn resolve_id(&mut self, id: u128) -> ProfileResolution {
         crate::world::phase::unprovided(
             "Profiles::resolve_id",

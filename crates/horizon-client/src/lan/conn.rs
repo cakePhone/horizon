@@ -2796,6 +2796,82 @@ mod tests {
         );
     }
 
+    /// A mod's login-profile edit is what the login success sends, with the login's own uuid and
+    /// name; a list past the profile limits falls back to the login's own properties.
+    #[test]
+    fn a_modded_login_profile_reaches_the_login_success() {
+        use mod_api::{Hooks, ModEntry, ProfileProperty};
+
+        #[derive(Default)]
+        struct Skin;
+        #[mod_api::horizon_mod]
+        impl Hooks for Skin {
+            fn player_login_profile(&self, event: &mut mod_api::PlayerLoginProfileEvent<'_>) {
+                event.properties.retain(|p| p.name != "textures");
+                event.properties.push(ProfileProperty::new(
+                    "textures".into(),
+                    "new".into(),
+                    Some("signed".into()),
+                ));
+            }
+        }
+
+        #[derive(Default)]
+        struct TooMany;
+        #[mod_api::horizon_mod]
+        impl Hooks for TooMany {
+            fn player_login_profile(&self, event: &mut mod_api::PlayerLoginProfileEvent<'_>) {
+                event.properties = (0..17)
+                    .map(|i| ProfileProperty::new(format!("p{i}"), "v".into(), None))
+                    .collect();
+            }
+        }
+
+        let lan = crate::lan::Lan::start_with(
+            Arc::new(SyncData::empty()),
+            crate::lan::NetConfig {
+                listen: false,
+                ..crate::lan::NetConfig::loopback(0, "Mods".into(), 8)
+            },
+        )
+        .unwrap();
+
+        let login = |mods: mod_platform::Mods| {
+            mod_platform::testing::with_mods(mods, || {
+                let (client, server) = horizon_protocol::connection::Pipe::pair();
+                let shared = lan.shared.clone();
+                let serve = mod_platform::testing::inherit_mods(move |_: &()| {
+                    let _ = super::serve_local(server, shared);
+                });
+                let worker =
+                    horizon_guest_stack::spawn("mod-login".into(), move || serve(&())).unwrap();
+                let profile = login_profile(&mut Connection::local(client), "Alex");
+                worker.join().unwrap();
+                profile
+            })
+        };
+
+        let profile = login(vec![ModEntry::new("skin", Box::new(Skin))].into());
+        assert_eq!(profile.uuid, offline_uuid("Alex"));
+        assert_eq!(profile.name, "Alex");
+        assert_eq!(
+            profile.properties,
+            vec![login::Property {
+                name: "textures".into(),
+                value: "new".into(),
+                signature: Some("signed".into()),
+            }]
+        );
+
+        let profile = login(vec![ModEntry::new("too-many", Box::new(TooMany))].into());
+        assert_eq!(profile.uuid, offline_uuid("Alex"));
+        assert_eq!(profile.name, "Alex");
+        assert!(
+            profile.properties.is_empty(),
+            "a list past the limits keeps the login's own properties"
+        );
+    }
+
     /// arismoko/horizon#3209: a client may announce its channels while the server waits on a configuration
     /// task (here the code of conduct). With no typed declaration the wait reads packets
     /// itself; the list must still be kept.

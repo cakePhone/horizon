@@ -1195,7 +1195,8 @@ impl ProfileProperty {
 #[non_exhaustive]
 #[derive(horizon_mod_api_macros::Wire)]
 pub enum ProfileResolution {
-    /// The lookup is still running; ask again on a later tick.
+    /// The lookup is still running, or waiting for the resolver's per-minute budget; ask again
+    /// on a later tick.
     Pending,
     /// The services' answer: the profile, or `None` when there is no such account or the lookup
     /// failed (for example, a rate-limited lookup). `None` does not prove the account is missing.

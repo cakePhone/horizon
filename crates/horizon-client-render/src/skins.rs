@@ -340,6 +340,9 @@ pub struct Resolver {
     send: std::sync::mpsc::Sender<(NameOrId, Option<ResolvedProfile>)>,
     /// Fetch threads still running; [`MAX_FETCHES`] bounds them.
     active: Arc<AtomicUsize>,
+    /// New lookups left this minute; one comes back each second.
+    lookups: u32,
+    last_lookup_refill: std::time::Instant,
     last_sweep: std::time::Instant,
     heads: HeadProfiles,
 }
@@ -354,6 +357,9 @@ const PROFILE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60)
 /// The most profile fetches that may run at once. Each is an OS thread and an HTTP request; a
 /// mod calling `resolve_id` in a loop must not exhaust them.
 const MAX_FETCHES: usize = 16;
+/// New profile lookups that may start a minute. Mojang rate-limits by IP, so one mod must not be
+/// able to spend the server's whole allowance at once; one slot comes back each second.
+const LOOKUPS_PER_MINUTE: u32 = 60;
 
 /// `StringUtil.isValidPlayerName` (the check `fetchByName` makes first).
 fn valid_player_name(name: &str) -> bool {
@@ -412,9 +418,25 @@ impl Resolver {
             done,
             send,
             active: Arc::new(AtomicUsize::new(0)),
+            lookups: LOOKUPS_PER_MINUTE,
+            last_lookup_refill: std::time::Instant::now(),
             last_sweep: std::time::Instant::now(),
             heads: HeadProfiles::default(),
         }
+    }
+    /// Takes one of the minute's new-lookup slots, adding back one a second.
+    fn take_lookup_budget(&mut self) -> bool {
+        let elapsed = self.last_lookup_refill.elapsed();
+        let refill = elapsed.as_secs().min(u64::from(LOOKUPS_PER_MINUTE)) as u32;
+        if refill > 0 {
+            self.lookups = (self.lookups + refill).min(LOOKUPS_PER_MINUTE);
+            self.last_lookup_refill += std::time::Duration::from_secs(u64::from(refill));
+        }
+        if self.lookups == 0 {
+            return false;
+        }
+        self.lookups -= 1;
+        true
     }
     /// `CacheBuilder.expireAfterAccess` with `maximumSize`.
     fn sweep(&mut self) {
@@ -463,6 +485,11 @@ impl Resolver {
         if self.active.load(Ordering::Relaxed) >= MAX_FETCHES {
             return Resolve::Pending;
         }
+        // Pace new lookups too: fresh names must not keep every worker busy and spend the
+        // server's Mojang allowance. At the budget, answer `Pending` without caching.
+        if !self.take_lookup_budget() {
+            return Resolve::Pending;
+        }
         let entry_key = key.clone();
         self.entries.insert(
             entry_key.clone(),
@@ -491,8 +518,9 @@ impl Resolver {
                 let _ = send.send((key, resolved));
             });
         if spawned.is_err() {
-            // The OS refused a thread: release the slot and let a later call retry.
+            // The OS refused a thread: release both slots and let a later call retry.
             self.active.fetch_sub(1, Ordering::Relaxed);
+            self.lookups = (self.lookups + 1).min(LOOKUPS_PER_MINUTE);
             self.entries.remove(&entry_key);
         }
         Resolve::Pending
@@ -1495,6 +1523,33 @@ mod tests {
         resolver
             .active
             .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn the_lookup_budget_answers_pending_without_caching() {
+        let mut resolver = super::Resolver::new();
+        resolver.lookups = 0;
+        resolver.last_lookup_refill = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let key = super::NameOrId::Id(7);
+        assert!(matches!(resolver.state(&key), super::Resolve::Pending));
+        assert!(!resolver.entries.contains_key(&key));
+    }
+
+    #[test]
+    fn new_lookups_are_paced_per_minute() {
+        let mut resolver = super::Resolver::new();
+        resolver.last_lookup_refill =
+            std::time::Instant::now() + std::time::Duration::from_secs(60);
+        for _ in 0..super::LOOKUPS_PER_MINUTE {
+            assert!(resolver.take_lookup_budget());
+        }
+        assert!(!resolver.take_lookup_budget());
+        resolver.last_lookup_refill = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .expect("the process has run for two seconds");
+        assert!(resolver.take_lookup_budget());
+        assert!(resolver.take_lookup_budget());
+        assert!(!resolver.take_lookup_budget());
     }
 
     #[test]
