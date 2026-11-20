@@ -545,9 +545,11 @@ impl Resolver {
                 let _ = send.send((key, resolved));
             });
         if spawned.is_err() {
-            // The OS refused a thread: release both slots and let a later call retry.
+            // The OS refused a thread: release the slots and let a later call retry.
             self.active.fetch_sub(1, Ordering::Relaxed);
-            self.lookups = (self.lookups + 1).min(LOOKUPS_PER_MINUTE);
+            if paced {
+                self.lookups = (self.lookups + 1).min(LOOKUPS_PER_MINUTE);
+            }
             self.entries.remove(&entry_key);
         }
         Resolve::Pending
